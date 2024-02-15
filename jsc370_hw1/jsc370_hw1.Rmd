@@ -1,0 +1,167 @@
+---
+title: "Homework 1"
+author: "John Chen"
+date: "27 January 2024"
+output:
+  html_document:
+    theme: flatly
+  pdf_document: default
+link-citations: true
+---
+
+# Goals
+
+- We are trying to answer the question: When and where do most break and entries
+occur in Toronto?. 
+
+# Data Set and Cleaning
+
+- We are using [break and enter open data set](https://data.torontopolice.on.ca/datasets/040ead448df2412da252cfbb532e77ac_0/explore?location=43.730563%2C-79.293781%2C10.56) in Toronto from the Toronto Police
+Service. 
+```{r message=FALSE, echo=FALSE}
+library(tidyverse)
+toronto_be <- read.csv("Break_and_Enter_Open_Data.csv")
+```
+```{r}
+str(toronto_be)
+sum(is.na.data.frame(toronto_be))
+unique(toronto_be$OFFENCE)
+```
+- There are 6 missing values which were converted to NA by read.csv. This dataset 
+has 70148 observations and 31 variables. Based on our data, the key variables relates
+to occurence time and the locations of the break and enter. So variables that
+starts with OCC, which records the time of break in, neighbourhood, longitude & latitude.
+All the offence all qualifies as break and enter.
+
+```{r}
+toronto_be <- toronto_be[c("OCC_YEAR","OCC_MONTH","OCC_DAY","OCC_HOUR","NEIGHBOURHOOD_158", "LONG_WGS84","LAT_WGS84","PREMISES_TYPE")]
+toronto_be <- toronto_be %>%
+  rename(
+    day = OCC_DAY,
+    hour = OCC_HOUR,
+    year = OCC_YEAR,
+    month = OCC_MONTH,
+    lon = LONG_WGS84,
+    lat = LAT_WGS84,
+    hood = NEIGHBOURHOOD_158,
+    type = PREMISES_TYPE
+  )
+toronto_be$month <- match(toronto_be$month, month.name)
+toronto_be$hood <- factor(toronto_be$hood)
+summary(toronto_be)
+```
+There are longitude and latitude values that are outside of the Toronto range. Those should be removed. The range of Toronto is roughly defined between -79.1 to -79.7 and 43.6 to 43.9, longitude and latitude, respectively. Also removed any observation that has 0 value for hour.
+
+```{r}
+toronto_be <- subset(toronto_be, lon < -79.1 & lon > -79.7 & lat < 43.9 & lat > 43.6)
+toronto_be <- subset(toronto_be, hour != 0)
+```
+
+
+```{r echo=FALSE}
+library(lubridate)
+toronto_be$time <- paste(as.character(toronto_be$year),
+                         toronto_be$month,as.character(toronto_be$day),
+                         as.character(toronto_be$hour), sep="-")
+toronto_be$time <- ymd_h(toronto_be$time)
+```
+```{r}
+hist(toronto_be$year, 
+     main = "Toronto Break and Entering by year",
+     xlab = "Year")
+boxplot(toronto_be$year, 
+     main = "Toronto Break and Entering by year",
+     ylab = "Year")
+toronto_be <- subset(toronto_be, year >= 2014)
+```
+- There is an sudden increase of occurrence of break and entering in 2014. 
+It could be due to the sudden increased awareness for terrorism. If that's the case, data before 2014 might not be representative of actual occurrences. Also
+due to the nature of our investigation, we should only focus on the clump of data. Data before 2014 is removed. Based on the boxplot, there were 3 outliers in the past. Those were removed in the process. 
+
+Creating a variable for season and investigate relationships
+
+If I were to choose a time to break and enter, it would be in the darker hours. Since the sun goes down at different time for each season. There could be a relationship between hour and season. 
+
+```{r}
+toronto_be <- toronto_be %>% mutate(
+  season = case_when(
+    month >= 3 & month < 6 ~ "spring",
+    month >= 6 & month < 9 ~ "summer",
+    month >= 9 & month < 12 ~ "autumn",
+    month >= 12 | month < 3 ~ "winter"
+  )
+)
+tapply(toronto_be$hour, toronto_be$season, summary)
+toronto_be %>% ggplot(aes(x=hour, color=season,fill=season)) +
+  geom_histogram(alpha=0.6, binwidth=1)
+```
+
+All season seems to have the same mean and median for the hour of occurrence. The histogram goes against my belief and shows that occurrences are most frequent during the day and afternoon. This might be due to survival bias where only the ones being seen during busy hours were reported. Each season shares the same distribution just in different volumes. This suggest that an association between hour and season does not exist. There seems to be a hierarchical trend between the total number of occurrences for season: autumn, spring, summer, and winter.
+
+# Relationship between neighborhood and season
+
+```{r warning=FALSE}
+con <- table(toronto_be$hood, toronto_be$season)
+matrix <- apply(as.matrix.noquote(con),2,as.numeric)
+column_margins <- colSums(con)
+head(prop.table(con, margin = 2) * 100, 10)
+chi <- chisq.test(con)
+chi
+```
+Since there is significant differences in conditional probabilities between each column for each row, it is suggested that the two variables are not independent. We can perform a chi-square test to further investigate their independency.
+Based on p-value from the chi-square test, we can reject the null hypothesis that neighborhood is independent from season. This strongly indicates that there is an association between season and neighborhood.
+
+#When and where do most break and enters occur?
+
+
+```{r}
+temp_df <- as.data.frame(table(toronto_be$hood))
+top10_hoods <- temp_df[rank(-temp_df$Freq)<=10,]$Var1
+top_torontoBe <- subset(toronto_be, hood %in% top10_hoods)
+top_torontoBe <- droplevels(top_torontoBe)
+ggplot(data=top_torontoBe, aes(x=hour, y=after_stat(count))) +
+  geom_bar() +
+  geom_density(color="blue") +
+  facet_grid(season~hood) +
+  theme(aspect.ratio=10/10, text=element_text(size=5)) +
+  labs(title="Break & Enter Frequency By Season And Neighborhood")
+```
+
+The hierarchical trend between seasons is no longer present when observing the most occurred neighborhoods. However, winter still seems to be the least occurred season in general across all neighborhoods. By looking at the top 10 most frequent occurred neighborhood, break & enter almost always occurs between the hours of 12 am, represented by 0, and 5 am. The shape of distribution is similar across all neighborhood; Two peaks between the hours of 12am to 5am and 6pm to 10pm. The shape of distribution is almost identical for each specific neighborhood across all season. The neighborhood, Milliken, has an unique distribution with a third peak in the afternoon.
+
+```{r}
+library(leaflet)
+reduced_torontoBe <- sample_n(toronto_be, 100)
+map <- leaflet(reduced_torontoBe) %>%
+  addTiles() %>%
+  addMarkers(~lon, ~lat)
+map
+```
+
+Mapped randomly selected 100 observations from the population. Break & Enter becomes more frequent as we get closer to to downtown.
+
+```{r}
+library(leaflet)
+hood_counts <- toronto_be %>%
+  group_by(hood) %>%
+  tally() %>%
+  arrange(desc(hood))
+lonlat <- toronto_be %>%
+  group_by(hood) %>%
+  summarise(
+    lat = mean(lat),
+    lon = mean(lon)
+  ) %>%
+  arrange(desc(hood))
+hood_counts$lat <- lonlat$lat
+hood_counts$lon <- lonlat$lon
+leaflet(hood_counts) %>%
+  addTiles() %>%
+  addLabelOnlyMarkers(lng =~lon, lat=~lat, label =paste(hood_counts$hood, "count: " ,as.character(hood_counts$n)), labelOptions = labelOptions(noHide = TRUE))
+  
+```
+
+
+
+
+
